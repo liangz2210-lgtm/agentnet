@@ -36,5 +36,8 @@ test/.tmp/
 .DS_Store
 Thumbs.db
 
+# ── 交付原始件（内容与已入库的 SPEC.md / TASK-01-PROMPT.md 重复，本地保留） ──
+files.zip
+
 # ── WorkBuddy 项目数据（勿删，但不入库） ─────────
 .workbuddy/
