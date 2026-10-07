@@ -36,10 +36,14 @@ const REQUIRED_TRACKED = [
   '.gitignore',
   '.npmrc',
   'src/config/paths.ts',
+  'src/config/dirguard.ts',
+  'src/config/uid.ts',
   'src/identity/identity.ts',
   'src/identity/keyfile.ts',
   'test/unit/identity.test.ts',
   'test/unit/keyfile.test.ts',
+  'test/unit/paths.test.ts',
+  'test/unit/audit-a1-a6.test.ts',
   'scripts/check-repo-integrity.mjs',
 ]
 

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { constants, readFileSync } from 'node:fs'
 import {
   chmodSync,
   lstatSync,
@@ -18,6 +18,8 @@ import {
   IdentityAccessError,
   IdentityExistsError,
   IdentityMissingError,
+  IdentityPermissionError,
+  IdentitySymlinkError,
   MalformedKeyError,
   MAX_KEY_FILE_BYTES,
   SECRET_KEY_BYTES,
@@ -125,10 +127,11 @@ describe('loadIdentity', () => {
     rmSync(link)
     symlinkSync(real, link)
 
-    // 本平台实测存在 O_NOFOLLOW，因此 open 即以 ELOOP 失败。
+    // 本平台实测存在 O_NOFOLLOW，因此 open 即以 ELOOP 失败 ——
+    // 该 errno 被归类成 IdentitySymlinkError（A7：不对外暴露裸 errno）。
     // 「stat 显示是符号链接」那条分支由 keyfile.test.ts 的纯函数用例覆盖。
-    expect(() => loadIdentity(env)).toThrow(IdentityAccessError)
-    expect(() => loadIdentity(env)).toThrow(/ELOOP/)
+    expect(() => loadIdentity(env)).toThrow(IdentitySymlinkError)
+    expect(() => loadIdentity(env)).not.toThrow(/ELOOP/)
   })
 
   it('拒绝：私钥路径是 FIFO，且**不挂起**', async () => {
@@ -233,8 +236,15 @@ describe('读取走 fd（结构约束）', () => {
   })
 
   it('本平台存在 O_NOFOLLOW，open 阶段即拒绝符号链接', () => {
-    const { constants } = require('node:fs') as typeof import('node:fs')
     expect(constants['O_NOFOLLOW' as keyof typeof constants]).toBeDefined()
+  })
+
+  it('A8/A9：dev/ino 回退只在无 O_NOFOLLOW 的平台执行，本机不执行', () => {
+    const src = readFileSync(new URL('../../src/identity/identity.ts', import.meta.url), 'utf8')
+    expect(src).toContain('if (O_NOFOLLOW === undefined)')
+    expect(src).toContain('本机实测存在该常量，此分支不执行')
+    // 本机实测两个 Node 版本都有该常量 ⇒ 该分支是死代码，覆盖率不应被当作防线。
+    expect(constants['O_NOFOLLOW' as keyof typeof constants]).toBe(256)
   })
 
   it('说明：上述用例证明的是「读写路径走 fd 且各分支被拒」', () => {
@@ -242,6 +252,32 @@ describe('读取走 fd（结构约束）', () => {
     // 在单元测试里无法稳定复现，也不该假装能复现。
     // 这里锁住的是结构性前提：不存在"先校验路径、再读路径"的第二次解析。
     expect(true).toBe(true)
+  })
+})
+
+describe('A7 回归：错误分类代替裸 errno', () => {
+  it('各类错误的消息里不含 errno 记号', () => {
+    for (const e of [
+      new IdentityMissingError('/x/identity.key'),
+      new IdentitySymlinkError('/x/identity.key'),
+      new IdentityPermissionError('/x/identity.key'),
+      new IdentityAccessError('/x/identity.key'),
+    ]) {
+      expect(e.message).not.toMatch(/\bE[A-Z]{3,}\b/)
+    }
+  })
+
+  it('errno 只用于分支判断，不拼进消息', () => {
+    const src = readFileSync(new URL('../../src/identity/identity.ts', import.meta.url), 'utf8')
+    expect(src).toContain('function classifyFsError')
+    expect(src).toContain('switch (code)')
+    // 构造器只收路径 —— 若哪天有人把 code 传进去，这条会立刻失败。
+    expect(src).not.toMatch(/new IdentityAccessError\([^)]*code/)
+    expect(src).not.toMatch(/new IdentityPermissionError\([^)]*code/)
+  })
+
+  it('符号链接与权限不足分属两个类型', () => {
+    expect(new IdentitySymlinkError('/x').name).not.toBe(new IdentityPermissionError('/x').name)
   })
 })
 

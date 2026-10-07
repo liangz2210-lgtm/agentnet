@@ -2,7 +2,12 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { InvalidBaseDirError, assertSafeBaseDir, baseDir } from '../../src/config/paths'
+import {
+  InvalidBaseDirError,
+  assertSafeBaseDir,
+  baseDir,
+  defaultBaseDir,
+} from '../../src/config/paths'
 
 const cleanups: string[] = []
 function tmp(): string {
@@ -36,13 +41,15 @@ describe('assertSafeBaseDir（外部可控输入，必须校验）', () => {
     expect(() => assertSafeBaseDir('/tmp/a\u0000b')).toThrow(/NUL/)
   })
 
-  it('拒绝：尾随分隔符（normalize 与 resolve 不一致）', () => {
-    expect(() => assertSafeBaseDir('/tmp/agentnet/')).toThrow(InvalidBaseDirError)
+  it('拒绝：文件系统根', () => {
+    // A4：根目录下"祖先"无从谈起，且与"仅当前用户可访问"直接冲突。
+    expect(() => assertSafeBaseDir('/')).toThrow(/根目录/)
   })
 
-  it('放行：多余斜杠会被两个函数一致地折叠，不改变目标位置', () => {
-    // normalize('/tmp//agentnet') 与 resolve 结果相同 —— 它指向的还是同一个地方，
-    // 因此不构成风险，不必拒绝。
+  it('放行：尾随分隔符与多余斜杠（A4 —— 不再用 normalize===resolve 拦它们）', () => {
+    // 这两条**不改变目标位置**，拒绝它们只是拒绝合法输入，挡不住任何攻击。
+    // "这个位置安不安全"由 resolveRealBaseDir 之后的逐层祖先检查回答。
+    expect(() => assertSafeBaseDir('/tmp/agentnet/')).not.toThrow()
     expect(() => assertSafeBaseDir('/tmp//agentnet')).not.toThrow()
   })
 
@@ -74,5 +81,30 @@ describe('baseDir', () => {
   it('当前进程环境的 AGENTNET_HOME 若被设置，也必须是合法的', () => {
     // 只做形式校验：本测试不修改 process.env
     expect(typeof baseDir().length).toBe('number')
+  })
+})
+
+describe('A5 回归：默认基目录不受 $HOME 影响', () => {
+  it('篡改 $HOME 后 baseDir({}) 仍指向真实家目录', () => {
+    const previous = process.env['HOME']
+    const expected = defaultBaseDir()
+    try {
+      process.env['HOME'] = '/tmp/FAKEHOME-AGENTNET-TEST'
+      // `os.homedir()` 会跟随 $HOME（已实测），因此这里验证的是我们**没有**用它。
+      expect(baseDir({})).toBe(expected)
+      expect(baseDir({})).not.toContain('FAKEHOME')
+    } finally {
+      if (previous === undefined) delete process.env['HOME']
+      else process.env['HOME'] = previous
+    }
+  })
+
+  it('源码从 node:os 只导入 userInfo，不导入会跟随 $HOME 的那一个', () => {
+    const src = require('node:fs').readFileSync(
+      new URL('../../src/config/paths.ts', import.meta.url),
+      'utf8',
+    ) as string
+    expect(src).not.toMatch(/import\s*\{[^}]*\bhomedir\b[^}]*\}\s*from\s*'node:os'/)
+    expect(src).toContain('userInfo().homedir')
   })
 })

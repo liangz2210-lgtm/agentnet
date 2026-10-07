@@ -3,6 +3,7 @@ import {
   constants,
   fstatSync,
   fsyncSync,
+  ftruncateSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -11,13 +12,15 @@ import {
   writeSync,
 } from 'node:fs'
 import type { Stats } from 'node:fs'
+import { join } from 'node:path'
 import { generateSecretKey, getPublicKey } from 'nostr-tools'
-import { baseDir, identityPath } from '../config/paths'
+import { IDENTITY_FILENAME } from '../config/paths'
+import { assertAncestrySafe, resolveRealBaseDir } from '../config/dirguard'
+import { currentUid } from '../config/uid'
 import {
   DIR_MODE,
   KEY_FILE_MODE,
   MAX_KEY_FILE_BYTES,
-  KeyDirError,
   assertPrivateDirectory,
   assertPrivateKeyFile,
   type FileStat,
@@ -35,7 +38,10 @@ export const SECRET_KEY_BYTES = 32
  * `O_NOFOLLOW` **在本机实测存在且生效**（Node 22.22.2 / 26.4.0 均为 256 / 0o400，
  * 打开符号链接返回 ELOOP）。但它是 BSD/Linux 特有、Windows 上不存在的常量，
  * 所以这里做特性检测：拿不到就退化为「fstat(fd) 与 lstat(路径) 比对 dev/ino」。
- * 两者都不依赖平台，区别在于强度不同。
+ *
+ * ⚠️ 该 dev/ino 回退分支**在本机永远不执行**（已知限制 L9）：
+ * 本机两个 Node 版本都实测存在 `O_NOFOLLOW`。保留它是为了无该常量的平台，
+ * 因此它不在本机的覆盖率统计内，也不应被当作"已验证的防线"。
  */
 const O_NOFOLLOW: number | undefined = (constants as Record<string, number | undefined>)[
   'O_NOFOLLOW'
@@ -48,6 +54,7 @@ const O_NONBLOCK: number | undefined = (constants as Record<string, number | und
   'O_NONBLOCK'
 ]
 
+/** 已存在身份：`init` 拒绝覆盖，且不提供 `--force`。 */
 export class IdentityExistsError extends Error {
   constructor(path: string) {
     super(
@@ -59,6 +66,7 @@ export class IdentityExistsError extends Error {
   }
 }
 
+/** 身份不存在：无论是文件缺失还是基目录缺失，都导向"先运行 init"。 */
 export class IdentityMissingError extends Error {
   constructor(path: string) {
     super(`未找到身份文件：${path}。请先运行 agentnet init`)
@@ -66,10 +74,50 @@ export class IdentityMissingError extends Error {
   }
 }
 
+/** 身份路径是符号链接（打开阶段即被 `O_NOFOLLOW` 拒绝）。 */
+export class IdentitySymlinkError extends Error {
+  constructor(path: string) {
+    super(`身份文件不能是符号链接：${path}。请删除该链接后重新运行 init。`)
+    this.name = 'IdentitySymlinkError'
+  }
+}
+
+/** 权限不足，无法读/写身份文件或其所在目录。 */
+export class IdentityPermissionError extends Error {
+  constructor(path: string) {
+    super(`没有权限访问身份文件：${path}。请检查该路径各级目录与文件的权限与属主。`)
+    this.name = 'IdentityPermissionError'
+  }
+}
+
+/** 兜底：无法访问，但**不泄露裸 errno**（A7）。 */
 export class IdentityAccessError extends Error {
-  constructor(path: string, code: string) {
-    super(`无法访问身份文件：${path}（${code}）。请检查父目录与文件的权限与属主。`)
+  constructor(path: string) {
+    super(`无法访问身份文件：${path}。请检查父目录与文件的权限与属主。`)
     this.name = 'IdentityAccessError'
+  }
+}
+
+/**
+ * 写入未完成，且**清理残留文件也失败**（A3）。
+ *
+ * 这是最危险的一种失败：磁盘上留下一个"内容不完整、又因 `wx` 挡住重建"的文件，
+ * 用户会被永久卡住。因此必须显式上报**并给出路径与手动处置步骤** ——
+ * 程序不自动删除（删掉什么，只能由人来决定）。
+ */
+export class IdentityCleanupError extends Error {
+  constructor(path: string, original: unknown, cleanup: unknown) {
+    super(
+      `写入身份文件失败，且清理残留文件也失败。\n` +
+        `残留文件：${path}\n` +
+        `原始失败：${messageOf(original)}\n` +
+        `清理失败：${messageOf(cleanup)}\n` +
+        `请手动处置（程序不会自动删除）：\n` +
+        `  1. cp -p "${path}" "${path}.bak"   先备份\n` +
+        `  2. mv "${path}" "${path}.stuck"     再移走，解除对 init 的阻塞\n` +
+        `  3. 重新运行 agentnet init`,
+    )
+    this.name = 'IdentityCleanupError'
   }
 }
 
@@ -101,41 +149,6 @@ function toStat(st: Stats): FileStat {
   }
 }
 
-/**
- * `process.getuid` 在跨平台类型上是可选的 —— 而在无 uid 概念的系统上，
- * 本项目的 0600 权限模型（SPEC §7 规则 2）根本不成立，因此直接报错而非降级。
- */
-function currentUid(): number {
-  const getuid = process.getuid
-  if (typeof getuid !== 'function') {
-    throw new Error('当前平台不支持 uid 校验，无法安全使用私钥文件')
-  }
-  return getuid.call(process)
-}
-
-/**
- * 基目录准入：`mkdirSync` 的 mode 只对**新建**的目录生效（实测：recursive 模式下
- * 每一层新建目录都会带上该 mode），目录**已存在**时它既不检查也不收紧；
- * 而 `lstatSync` 与打开时的 `O_NOFOLLOW` 都只作用于**路径最后一段**。
- * 因此 mkdir 之后必须自己验一遍。
- *
- * ⚠️ 已知缺口（二轮审计 A1/A2）：**祖先路径段不受覆盖** ——
- * 基目录任一祖先被替换成符号链接时，这里的校验与随后的 open 都会被整体平移。
- * 当前实现也未复用目录校验的结果（见 A2）。两者均未修，待定。
- *
- * 采用拒绝而非自动 chmod：与私钥文件「权限过松则拒绝运行」保持一致，
- * 静默改动用户目录权限是更糟的惊喜。
- */
-function ensureBaseDirReady(dir: string): void {
-  let st: Stats
-  try {
-    st = lstatSync(dir)
-  } catch (err) {
-    throw new KeyDirError(`无法访问数据目录：${dir}（${errnoOf(err)}）`)
-  }
-  assertPrivateDirectory(toStat(st), currentUid())
-}
-
 function isErrno(err: unknown, code: string): boolean {
   return (
     typeof err === 'object' && err !== null && (err as { code?: unknown }).code === code
@@ -150,6 +163,54 @@ function errnoOf(err: unknown): string {
   return 'UNKNOWN'
 }
 
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * 把底层 errno 归类成**自有错误类型**（A7）。
+ *
+ * 不把裸 errno 拼进消息：errno 会向攻击者透露文件系统状态
+ * （"这个路径是 ENOENT 还是 EACCES"本身就是信息）。
+ * 对外只给"发生了什么 + 该怎么办"，分类通过错误**类型**表达。
+ */
+function classifyFsError(err: unknown, path: string): Error {
+  const code = errnoOf(err)
+  switch (code) {
+    case 'ENOENT':
+      return new IdentityMissingError(path)
+    case 'ELOOP':
+      return new IdentitySymlinkError(path)
+    case 'EACCES':
+    case 'EPERM':
+      return new IdentityPermissionError(path)
+    default:
+      return new IdentityAccessError(path)
+  }
+}
+
+/**
+ * 基目录准入：`mkdirSync` 的 mode 只对**新建**的目录生效（实测：recursive 模式下
+ * 每一层新建目录都会带上该 mode），目录**已存在**时它既不检查也不收紧；
+ * 而 `lstatSync` 与打开时的 `O_NOFOLLOW` 都只作用于**路径最后一段** ——
+ * 祖先路径段由 `assertAncestrySafe` 覆盖（A1 / A2）。
+ *
+ * 采用拒绝而非自动 chmod：与私钥文件「权限过松则拒绝运行」保持一致，
+ * 静默改动用户目录权限是更糟的惊喜。
+ *
+ * **基目录不存在 ⇒ 视同身份不存在**（A6）：抛 `IdentityMissingError`，
+ * 让首次运行引导照常出现，而不是抛一个让人摸不着头脑的"目录错误"。
+ */
+function assertDirectoryReady(dir: string, uid: number): void {
+  let st: Stats
+  try {
+    st = lstatSync(dir)
+  } catch (err) {
+    throw classifyFsError(err, join(dir, IDENTITY_FILENAME))
+  }
+  assertPrivateDirectory(toStat(st), uid)
+}
+
 /** 打开私钥文件：绕开符号链接、不因 FIFO 挂起、返回已钉住 inode 的 fd。 */
 function openKeyFile(target: string): number {
   let flags = constants.O_RDONLY | (O_NONBLOCK ?? 0)
@@ -162,7 +223,8 @@ function openKeyFile(target: string): number {
  * 在写入与 chmod 之间存在可被读取的时间窗（DECISIONS.md「私钥保护」）。
  *
  * 若文件已存在则**拒绝覆盖**并提示用户手动备份或移走（不提供 --force）。
- * 打开之后的任何失败都会删除残留文件，保证「要么有合规可用的身份，要么磁盘上什么都没有」。
+ * 打开之后的任何失败都会**先截断再删除**残留文件（A3），
+ * 保证「要么有合规可用的身份，要么磁盘上什么都没有」。
  */
 export function saveNewIdentity(
   secretKey: Uint8Array,
@@ -172,11 +234,14 @@ export function saveNewIdentity(
     throw new MalformedKeyError(`私钥必须是 ${SECRET_KEY_BYTES} 字节`)
   }
 
-  const dir = baseDir(env)
-  mkdirSync(dir, { recursive: true, mode: DIR_MODE })
-  ensureBaseDirReady(dir)
+  const uid = currentUid()
+  // 解析一次真实路径，之后全程使用它 —— 祖先路径段同样纳入检查（A1 / A2）。
+  const { real, exists } = resolveRealBaseDir(env)
+  assertAncestrySafe(real, uid)
+  if (!exists) mkdirSync(real, { recursive: true, mode: DIR_MODE })
+  assertDirectoryReady(real, uid)
 
-  const target = identityPath(env)
+  const target = join(real, IDENTITY_FILENAME)
   // 落盘为 64 个十六进制字符（而非 32 字节原始二进制）：格式可被人工检视，
   // 且与 MAX_KEY_FILE_BYTES 的上限口径一致。
   const payload = Buffer.from(Buffer.from(secretKey).toString('hex'), 'utf8')
@@ -188,21 +253,31 @@ export function saveNewIdentity(
     if (isErrno(err, 'EEXIST')) {
       throw new IdentityExistsError(target)
     }
-    throw err
+    throw classifyFsError(err, target)
   }
 
   try {
     writeAll(fd, payload)
     fsyncSync(fd)
     // 对 fd 校验：umask 会削弱 open 的 mode 实参，因此落盘后必须复核。
-    assertPrivateKeyFile(toStat(fstatSync(fd)), currentUid())
+    assertPrivateKeyFile(toStat(fstatSync(fd)), uid)
   } catch (err) {
-    closeSync(fd)
-    // 清场：不留一个"存在但不可用、又挡住重建"的半成品文件。
+    // A3：先把长度截断为 0 —— 即便随后 unlink 失败，磁盘上也不该残留私钥字节。
+    try {
+      ftruncateSync(fd, 0)
+    } catch {
+      /* 截断失败也要继续尝试 unlink */
+    }
+    try {
+      closeSync(fd)
+    } catch {
+      /* 同上 */
+    }
     try {
       unlinkSync(target)
-    } catch {
-      /* 清理失败也要继续抛出原错误 */
+    } catch (cleanupErr) {
+      // 不静默：残留文件会让用户永久卡住，必须显式上报并给出路径与手动步骤。
+      throw new IdentityCleanupError(target, err, cleanupErr)
     }
     throw err
   }
@@ -223,40 +298,43 @@ function writeAll(fd: number, buf: Buffer): void {
 /**
  * 加载身份。
  *
- * 顺序刻意如此：`openSync`（钉住 inode，且拒绝符号链接 / 不因 FIFO 挂起）
- * → `fstatSync(fd)` 校验 → 按 size 判上限 → 从 **fd** 读。
+ * 顺序刻意如此：解析真实路径 → 逐层祖先检查 → 目录准入 → `openSync`
+ * （钉住 inode，且拒绝符号链接 / 不因 FIFO 挂起）→ `fstatSync(fd)` 校验
+ * → 按 size 判上限 → 从 **fd** 读。
  * 全程不再对路径做第二次解析，因此不存在 TOCTOU 窗口。
  */
 export function loadIdentity(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): Identity {
-  const dir = baseDir(env)
-  ensureBaseDirReady(dir)
-  const target = identityPath(env)
+  const uid = currentUid()
+  const { real, exists } = resolveRealBaseDir(env)
+  assertAncestrySafe(real, uid)
+  // A6：基目录不存在 = 还没有身份，而不是"目录出错"。
+  if (!exists) throw new IdentityMissingError(join(real, IDENTITY_FILENAME))
+  assertDirectoryReady(real, uid)
+
+  const target = join(real, IDENTITY_FILENAME)
 
   let fd: number
   try {
     fd = openKeyFile(target)
   } catch (err) {
-    const code = errnoOf(err)
-    // 只把 ENOENT 当成"不存在"。EACCES / ELOOP / ENOTDIR 各有含义，
-    // 一律伪装成"文件不存在"会诱导用户去重建身份 —— 方向正好是攻击者想要的。
-    if (code === 'ENOENT') throw new IdentityMissingError(target)
-    throw new IdentityAccessError(target, code)
+    throw classifyFsError(err, target)
   }
 
   try {
     const st = fstatSync(fd)
 
-    // 无 O_NOFOLLOW 时的等效防线：fd 指向的 inode 必须与 lstat 看到的一致。
+    // ⚠️ 仅用于**无 `O_NOFOLLOW` 的平台**；本机实测存在该常量，此分支不执行（L9）。
+    // 原理：fd 指向的 inode 必须与 lstat 看到的一致，否则说明中间被掉包。
     if (O_NOFOLLOW === undefined) {
       const pathStat = lstatSync(target)
       if (pathStat.dev !== st.dev || pathStat.ino !== st.ino) {
-        throw new Error('身份文件在打开前后被替换')
+        throw new IdentitySymlinkError(target)
       }
     }
 
-    assertPrivateKeyFile(toStat(st), currentUid())
+    assertPrivateKeyFile(toStat(st), uid)
 
     // 上限由 assertPrivateKeyFile 在读取之前判掉，此处不重复。
     const size = st.size
