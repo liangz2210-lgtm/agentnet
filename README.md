@@ -68,6 +68,12 @@
 
 完整边界与每条防线对应的攻击形态见 `DECISIONS.md` 第 0 节与第 9 节。
 
+### 平台支持
+
+里程碑 1 **仅在 macOS 与 Linux 上测试过**。**Windows 暂不支持**:
+私钥文件保护依赖 `O_NOFOLLOW` 等 POSIX 语义,该路径在 Windows 上**未经实测**(见
+`DECISIONS.md` §18 N10),不宜假定它成立。
+
 ---
 
 ## 开发
