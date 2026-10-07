@@ -81,5 +81,8 @@
 ```bash
 pnpm install       # 需要 .npmrc 中的 node-linker=hoisted，见 DECISIONS.md §13
 pnpm typecheck
-pnpm test
+pnpm test          # 单元测试 + 集成测试（集成测试需要本地安装 nak 0.21.0）
 ```
+
+集成测试会临时启动 `nak serve`（随机端口、测完自动关闭），需要 `nak` 在 PATH 中。
+详见 `DECISIONS.md` §1 与第 2 节（传输层逐中继连接、送达判定、限速与回溯窗口）。

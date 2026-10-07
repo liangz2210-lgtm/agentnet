@@ -40,15 +40,25 @@ const REQUIRED_TRACKED = [
   'src/config/uid.ts',
   'src/identity/identity.ts',
   'src/identity/keyfile.ts',
+  'src/envelope/validate.ts',
+  'src/envelope/wrap.ts',
+  'src/transport/transport.ts',
+  'src/transport/relay-connection.ts',
+  'src/receive/pipeline.ts',
+  'src/receive/dedup.ts',
+  'src/messaging/outgoing.ts',
   'test/unit/identity.test.ts',
   'test/unit/keyfile.test.ts',
   'test/unit/paths.test.ts',
   'test/unit/audit-a1-a6.test.ts',
+  'test/unit/pipeline.test.ts',
+  'test/integration/transport.test.ts',
+  'test/integration/helpers/nak.ts',
   'scripts/check-repo-integrity.mjs',
 ]
 
 /** 关键目录：目录下至少要有一个被跟踪的文件。 */
-const REQUIRED_DIRS = ['src/config', 'src/identity', 'src/envelope', 'test/unit', 'test/integration']
+const REQUIRED_DIRS = ['src/config', 'src/identity', 'src/envelope', 'src/transport', 'src/receive', 'src/messaging', 'src/common', 'test/unit', 'test/integration']
 
 /** 必须被忽略的私钥类/敏感文件形态（这些路径可以不存在）。 */
 const REQUIRED_IGNORED = [

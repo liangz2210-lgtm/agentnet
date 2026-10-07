@@ -16,6 +16,7 @@ export interface DedupOptions {
   /** 绝对保留上限（秒）：`min(expires_at, now + ttlCeilingSeconds) + graceSeconds`。 */
   ttlCeilingSeconds?: number
   graceSeconds?: number
+  /** 毫秒时钟（默认 Date.now）。⚠️ `expires_at` 是**秒**，内部统一乘 1000 —— 单位混用是真实发生过的 bug。 */
   now?: () => number
 }
 
@@ -67,8 +68,10 @@ export class DedupTable {
     const k = keyOf(from, id)
     if (this.entries.has(k)) return { ok: false, reason: 'DUPLICATE' }
 
+    // ⚠️ 单位换算：`expires_at` 是协议层的秒，时钟是毫秒。
     const retainUntil =
-      Math.min(expiresAt, now + this.ttlCeilingSeconds) + this.graceSeconds
+      Math.min(expiresAt * 1000, now + this.ttlCeilingSeconds * 1000) +
+      this.graceSeconds * 1000
 
     const senderKeys = this.perSender.get(from) ?? []
     if (senderKeys.length >= this.perSenderQuota) {
