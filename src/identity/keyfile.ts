@@ -46,7 +46,8 @@ export const DIR_MODE = 0o700
 /**
  * 私钥文件的读取上限。
  * 合法内容是 64 个十六进制字符 = 64 字节；留 4 倍余量吸收可能的 BOM/换行/空白。
- * **必须在 readFileSync 之前**用 `fstat.size` 判定，否则畸形大文件会先进内存。
+ * **必须在读取之前**用 `fstat.size` 判定（读取走 fd 的 `readSync`），
+ * 否则畸形大文件会先被读进内存。
  */
 export const MAX_KEY_FILE_BYTES = 256
 
