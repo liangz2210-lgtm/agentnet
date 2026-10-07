@@ -5,13 +5,13 @@ build/
 coverage/
 *.tsbuildinfo
 
-# ── 私钥 / 身份（安全规则 2：绝不进仓库） ─────────
-# 任何 *.key / *.nsec / *.sec / *.hex-private 一律忽略
+# ── 私钥 / 身份文件（安全规则 2：绝不进仓库） ─────
+# 只用「后缀」来匹配私钥文件本身。
+# 切勿写成 identity / identity.* —— 那会把 src/identity/ 目录
+# 与 test/unit/identity.test.ts 一并吞掉，且 git status 看上去依然很干净。
 *.key
 *.nsec
 *.priv
-identity
-identity.*
 *.pem
 
 # ── 本地数据与密钥库 ──────────────────────────────
