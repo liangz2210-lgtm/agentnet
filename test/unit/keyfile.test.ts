@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   KEY_FILE_MODE,
+  KeyDirError,
   KeyFileError,
+  assertPrivateDirectory,
   assertPrivateKeyFile,
   formatMode,
 } from '../../src/identity/keyfile'
@@ -56,6 +58,31 @@ describe('assertPrivateKeyFile（纯函数，可接收伪造 stat）', () => {
     expect(() => assertPrivateKeyFile(stat({ mode: 0o000 }), MY_UID)).toThrow(
       /不可读/,
     )
+  })
+
+  it('放行：数据目录为 0700 / 普通目录 / 属当前用户', () => {
+    const dirStat = { ...stat(), isFile: false, isDirectory: true, mode: 0o40700 }
+    expect(() => assertPrivateDirectory(dirStat, MY_UID)).not.toThrow()
+  })
+
+  it('拒绝：数据目录是符号链接', () => {
+    const dirStat = { ...stat(), isFile: false, isDirectory: true, isSymbolicLink: true, mode: 0o40700 }
+    expect(() => assertPrivateDirectory(dirStat, MY_UID)).toThrow(KeyDirError)
+    expect(() => assertPrivateDirectory(dirStat, MY_UID)).toThrow(/符号链接/)
+  })
+
+  it('拒绝：数据目录属主不是当前用户', () => {
+    const dirStat = { ...stat(), isFile: false, isDirectory: true, mode: 0o40700, uid: OTHER_UID }
+    expect(() => assertPrivateDirectory(dirStat, MY_UID)).toThrow(/必须属于当前用户/)
+  })
+
+  it('拒绝：数据目录权限过松（0755）', () => {
+    const dirStat = { ...stat(), isFile: false, isDirectory: true, mode: 0o40755 }
+    expect(() => assertPrivateDirectory(dirStat, MY_UID)).toThrow(/权限过松/)
+  })
+
+  it('拒绝：不是目录', () => {
+    expect(() => assertPrivateDirectory(stat(), MY_UID)).toThrow(/必须是目录/)
   })
 
   it('formatMode 输出三位八进制', () => {

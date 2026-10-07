@@ -17,6 +17,8 @@ import {
   DIR_MODE,
   KEY_FILE_MODE,
   MAX_KEY_FILE_BYTES,
+  KeyDirError,
+  assertPrivateDirectory,
   assertPrivateKeyFile,
   type FileStat,
 } from './keyfile'
@@ -111,6 +113,24 @@ function currentUid(): number {
   return getuid.call(process)
 }
 
+/**
+ * 基目录准入：`mkdirSync` 的 mode **只在新建那一层生效**，
+ * 目录已存在时既不检查也不收紧，符号链接还会被静默接受 ——
+ * 那等于把私钥投递到一个不受控的位置。因此 mkdir 之后必须自己验一遍。
+ *
+ * 采用拒绝而非自动 chmod：与私钥文件「权限过松则拒绝运行」保持一致，
+ * 静默改动用户目录权限是更糟的惊喜。
+ */
+function ensureBaseDirReady(dir: string): void {
+  let st: Stats
+  try {
+    st = lstatSync(dir)
+  } catch (err) {
+    throw new KeyDirError(`无法访问数据目录：${dir}（${errnoOf(err)}）`)
+  }
+  assertPrivateDirectory(toStat(st), currentUid())
+}
+
 function isErrno(err: unknown, code: string): boolean {
   return (
     typeof err === 'object' && err !== null && (err as { code?: unknown }).code === code
@@ -149,6 +169,7 @@ export function saveNewIdentity(
 
   const dir = baseDir(env)
   mkdirSync(dir, { recursive: true, mode: DIR_MODE })
+  ensureBaseDirReady(dir)
 
   const target = identityPath(env)
   // 落盘为 64 个十六进制字符（而非 32 字节原始二进制）：格式可被人工检视，
@@ -204,6 +225,8 @@ function writeAll(fd: number, buf: Buffer): void {
 export function loadIdentity(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): Identity {
+  const dir = baseDir(env)
+  ensureBaseDirReady(dir)
   const target = identityPath(env)
 
   let fd: number
