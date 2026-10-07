@@ -1,0 +1,40 @@
+# ── 依赖与构建产物 ────────────────────────────────
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# ── 私钥 / 身份（安全规则 2：绝不进仓库） ─────────
+# 任何 *.key / *.nsec / *.sec / *.hex-private 一律忽略
+*.key
+*.nsec
+*.priv
+identity
+identity.*
+*.pem
+
+# ── 本地数据与密钥库 ──────────────────────────────
+.agentnet/
+agentnet-data/
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# ── 环境变量 ─────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── 测试产生的临时物 ─────────────────────────────
+test/tmp/
+test/.tmp/
+*.log
+
+# ── 系统 ────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── WorkBuddy 项目数据（勿删，但不入库） ─────────
+.workbuddy/
