@@ -5,17 +5,19 @@ import {
   assertPrivateKeyFile,
   formatMode,
 } from '../../src/identity/keyfile'
-import type { KeyFileStat } from '../../src/identity/keyfile'
+import type { FileStat } from '../../src/identity/keyfile'
 
 const MY_UID = 501
 const OTHER_UID = 502
 
-function stat(over: Partial<KeyFileStat> = {}): KeyFileStat {
+function stat(over: Partial<FileStat> = {}): FileStat {
   return {
     isFile: true,
     isSymbolicLink: false,
     mode: KEY_FILE_MODE,
     uid: MY_UID,
+    size: 64,
+    isDirectory: false,
     ...over,
   }
 }
