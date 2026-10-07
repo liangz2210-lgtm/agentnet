@@ -75,6 +75,21 @@ describe('saveNewIdentity', () => {
     expect(readFileSync(target, 'utf8')).toMatch(/^[0-9a-f]{64}$/)
   })
 
+  it('已存在身份时的提示不含 --force，而是指引手动备份', () => {
+    const env = tempHome()
+    saveNewIdentity(generateIdentity().secretKey, env)
+    let message = ''
+    try {
+      saveNewIdentity(generateIdentity().secretKey, env)
+    } catch (e) {
+      message = (e as Error).message
+    }
+    // 不提供 --force：要不要丢掉一个身份，只能由人决定。
+    expect(message).not.toContain('--force')
+    expect(message).toMatch(/备份|移走/)
+    expect(message).toMatch(/无法找回/)
+  })
+
   it('已存在身份时拒绝覆盖，且原内容不变', () => {
     const env = tempHome()
     const first = generateIdentity()
