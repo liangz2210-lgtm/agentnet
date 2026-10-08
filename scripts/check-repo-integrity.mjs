@@ -71,6 +71,28 @@ const REQUIRED_TRACKED = [
   'scripts/check-repo-integrity.mjs',
 ]
 
+/**
+ * 发布要件 —— **必须在仓库根目录**。
+ *
+ * LICENSE 尤其容易漏：GitHub 的许可证识别**只认根目录的 LICENSE 文件**，
+ * `package.json` 里的 `"license": "Apache-2.0"` 字段不算数。漏了它，
+ * 仓库页的许可证一栏就是"未识别"，法律上等于没给授权。
+ */
+const REQUIRED_ROOT_DOCS = [
+  {
+    file: 'LICENSE',
+    minChars: 500,
+    mustContain: ['Apache License'],
+    why: 'GitHub 只认根目录的 LICENSE 文件；package.json 的 license 字段不算数',
+  },
+  {
+    file: 'SECURITY.md',
+    minChars: 200,
+    mustContain: ['漏洞'],
+    why: '必须告诉报告者如何**私下发**漏洞，否则他们只能开公开 issue',
+  },
+]
+
 /** 关键目录：目录下至少要有一个被跟踪的文件。 */
 const REQUIRED_DIRS = ['src/config', 'src/identity', 'src/envelope', 'src/transport', 'src/receive', 'src/messaging', 'src/common', 'src/cli', 'test/unit', 'test/integration', 'test/e2e']
 
@@ -257,6 +279,31 @@ if (failures.length === 0) {
       passes.push(`line ok: ${spec.file} ${prev}→${cur}（-${drop}，在阈值内）`)
     } else {
       passes.push(`line ok: ${spec.file} ${prev}→${cur}`)
+    }
+  }
+
+  console.log('\n[6] 发布要件：根目录必须有 LICENSE 与 SECURITY.md')
+  for (const spec of REQUIRED_ROOT_DOCS) {
+    const abs = join(REPO_ROOT, spec.file)
+    if (!existsSync(abs)) {
+      failures.push(`根目录缺少 ${spec.file} —— ${spec.why}`)
+      continue
+    }
+    const text = readFileSync(abs, 'utf8')
+    if (text.trim().length < spec.minChars) {
+      failures.push(`${spec.file} 只有 ${text.trim().length} 字符，多半是占位符而不是真文件`)
+      continue
+    }
+    for (const needle of spec.mustContain) {
+      if (text.includes(needle)) passes.push(`${spec.file} 含「${needle}」`)
+      else failures.push(`${spec.file} 不含「${needle}」 —— 可能放错了文件`)
+    }
+    if (tracked.has(spec.file)) {
+      passes.push(`tracked: ${spec.file}`)
+    } else if (isIgnored(spec.file)) {
+      failures.push(`${spec.file} 被 .gitignore 忽略（必须入库）：${spec.why}`)
+    } else {
+      failures.push(`${spec.file} 存在但尚未 git add —— ${spec.why}`)
     }
   }
 
