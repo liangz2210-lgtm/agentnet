@@ -5,15 +5,20 @@
   "description": "Open network layer for agents: public-key identity and end-to-end encrypted relay messaging (milestone 1)",
   "license": "Apache-2.0",
   "type": "module",
+  "bin": {
+    "agentnet": "dist/cli/bin.js"
+  },
   "engines": {
     "node": ">=22"
   },
   "scripts": {
+    "build": "node scripts/build-cli.mjs",
     "typecheck": "tsc --noEmit",
     "check:repo": "node scripts/check-repo-integrity.mjs",
     "test": "vitest run",
     "test:unit": "vitest run --dir test/unit",
-    "test:integration": "vitest run --dir test/integration"
+    "test:integration": "vitest run --dir test/integration",
+    "test:e2e": "vitest run test/e2e"
   },
   "dependencies": {
     "nostr-tools": "2.25.2",

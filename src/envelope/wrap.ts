@@ -8,15 +8,31 @@
  */
 
 import * as nip17 from 'nostr-tools/nip17'
+import * as nip59 from 'nostr-tools/nip59'
 import { verifyEvent, type Event } from 'nostr-tools'
 
-/** 把应用层信封（`buildEnvelope` 的输出）封成可直接发布到中继的 gift wrap。 */
+/**
+ * 把应用层信封（`buildEnvelope` 的输出）封成可直接发布到中继的 gift wrap。
+ *
+ * **不用 `nip17.wrapEvent`**，而用 nip59 三步自己拼 —— 实测（nostr-tools 2.25.2 源码）：
+ * `nip17.wrapEvent` 的 rumor 时间戳是 `Math.ceil(Date.now()/1e3)`，**写死取系统时钟，
+ * 调用方传不进去**。于是信封里的 `expires_at`（由注入时钟算出）与 `rumor.created_at`
+ * 会差 1 秒；`--ttl 1` 时接收侧算出的有效期变成 0，消息刚发出就被判
+ * `LIFETIME_NOT_POSITIVE`。SPEC v0.2 规定 rumor.created_at 是**唯一时间基准**，
+ * 那就必须让发送方说了算 —— 所以显式传 `createdAt`。
+ */
 export function wrapEnvelope(
   senderPrivateKey: Uint8Array,
   recipientPubkey: string,
   envelopeRaw: string,
+  createdAt: number = Math.floor(Date.now() / 1000),
 ): Event {
-  return nip17.wrapEvent(senderPrivateKey, { publicKey: recipientPubkey }, envelopeRaw)
+  const rumor = nip59.createRumor(
+    { kind: 14, content: envelopeRaw, tags: [], created_at: createdAt },
+    senderPrivateKey,
+  )
+  const seal = nip59.createSeal(rumor, senderPrivateKey, recipientPubkey)
+  return nip59.createWrap(seal, recipientPubkey)
 }
 
 export type UnwrapResult =
