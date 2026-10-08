@@ -30,6 +30,7 @@ const REQUIRED_TRACKED = [
   'DECISIONS.md',
   'README.md',
   'ACCEPTANCE.md',
+  'LIMITS.md',
   'package.json',
   'pnpm-lock.yaml',
   'tsconfig.json',
