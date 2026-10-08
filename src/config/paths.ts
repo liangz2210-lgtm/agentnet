@@ -19,7 +19,7 @@ export class InvalidBaseDirError extends Error {
  *
  * ⚠️ **用 `os.userInfo().homedir`，不用 `os.homedir()`** —— 后者会跟随 `$HOME`。
  * 实测（见 DECISIONS.md「否定性断言清单」A5 条目）：把 `$HOME` 改成 `/tmp/FAKEHOME-TEST`
- * 之后 `os.homedir()` 立刻变成该值，而 `os.userInfo().homedir` 仍是真实的 `/Users/yao`。
+ * 之后 `os.homedir()` 立刻变成该值，而 `os.userInfo().homedir` 仍是真实的 `/Users/<you>`。
  * `AGENTNET_HOME` 未设置时，家目录是私钥落盘位置的唯一依据，不能受环境变量摆布。
  */
 export function defaultBaseDir(): string {

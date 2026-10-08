@@ -371,7 +371,7 @@ MIT 许可，与项目 Apache-2.0 兼容。若未来 Node 修复其错误传播�
 - 基目录：`$AGENTNET_HOME`，否则 `~/.agentnet`
 - ⚠️ 默认路径中的家目录取 **`os.userInfo().homedir`**，**不是** `os.homedir()`（A5）。
   实测：把 `$HOME` 改成 `/tmp/FAKEHOME-TEST` 后 `os.homedir()` 立即变成该值，
-  而 `os.userInfo().homedir` 仍是真实的 `/Users/yao`。
+  而 `os.userInfo().homedir` 仍是真实的 `/Users/<you>`。
   `AGENTNET_HOME` 未设置时，家目录是私钥落盘位置的**唯一依据**，不能受环境变量摆布。
   实测命令见第 18 节
 - `~/.agentnet/config.json`（0644）— `relays: string[]`
@@ -625,7 +625,7 @@ gift wrap 的 `p` 标签是明文的，中继虽读不懂内容，却能知道�
 | N1 | `fs.constants.O_NOFOLLOW` **存在且生效** | ✅ 已实测 | `node -e "const f=require('fs');console.log(f.constants.O_NOFOLLOW);console.log(f.constants.O_NONBLOCK)"` | `256`（`0o400`）与 `4`；带 `O_NOFOLLOW` 打开符号链接返回 `ELOOP` |
 | N2 | 只读打开无写端 FIFO **会永久阻塞** | ✅ 已实测 | `mkfifo /tmp/f && printf 'import{openSync}from"node:fs";openSync(process.argv[2],Number(process.argv[3]));console.log("OPENED")' > /tmp/c.mjs && node /tmp/c.mjs /tmp/f 0 && node /tmp/c.mjs /tmp/f 4` | flags=0（不带 `O_NONBLOCK`）：**卡住不返回**，需 `Ctrl-C`；flags=4：立即 `OPENED`（实测 2ms） |
 | N3 | `mkdirSync(recursive, {mode})` 的 mode **施加到每一层**新建目录 | ✅ 已实测 | `node -e "const fs=require('fs');fs.mkdirSync('/tmp/p/a/b/c',{recursive:true,mode:0o700});for(const p of ['/tmp/p/a','/tmp/p/a/b','/tmp/p/a/b/c'])console.log((fs.statSync(p).mode&0o7777).toString(8),p)"` | 三层均为 `700` |
-| N4 | `os.homedir()` **会跟随** `$HOME`，`os.userInfo().homedir` **不会** | ✅ 已实测 | `node -e "const os=require('os');console.log(os.homedir(),os.userInfo().homedir);process.env.HOME='/tmp/FAKEHOME-TEST';console.log(os.homedir(),os.userInfo().homedir)"` | 改前 `…/Users/yao /Users/yao`；改后 `/tmp/FAKEHOME-TEST /Users/yao` |
+| N4 | `os.homedir()` **会跟随** `$HOME`，`os.userInfo().homedir` **不会** | ✅ 已实测 | `node -e "const os=require('os');console.log(os.homedir(),os.userInfo().homedir);process.env.HOME='/tmp/FAKEHOME-TEST';console.log(os.homedir(),os.userInfo().homedir)"` | 改前 `…/Users/<you> /Users/<you>`；改后 `/tmp/FAKEHOME-TEST /Users/<you>` |
 | N5 | macOS 上 **`/var` 是符号链接**（指向 `/private/var`） | ✅ 已实测 | `node -e "const fs=require('fs');console.log(fs.lstatSync('/var').isSymbolicLink(), fs.realpathSync('/var'))"` | `true /private/var`；`os.tmpdir()` 返回的 `/var/folders/…` 因此**本身含符号链接** |
 | N6 | `/tmp` 是 **sticky + 世界可写**（`1777`）的共享目录 | ✅ 已实测 | `ls -ld /tmp && stat -f "%Sp" /private/tmp` | `/tmp -> private/tmp`；`/private/tmp` 为 `drwxrwxrwt` |
 | N7 | `unwrapEvent` **不**校验信封里的 `from` | ✅ 已实测 | 第一部分 E 的四行攻击矩阵 | 「实际发送者 C、JSON 声称来自 A」**放行** |

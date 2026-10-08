@@ -30,11 +30,11 @@ describe('assertSafeBaseDir（外部可控输入，必须校验）', () => {
   })
 
   it('拒绝：包含 .. 路径段（会把私钥投递到意料之外的位置）', () => {
-    expect(() => assertSafeBaseDir('/Users/yao/../etc')).toThrow(/不得包含/)
+    expect(() => assertSafeBaseDir('/Users/someone/../etc')).toThrow(/不得包含/)
   })
 
   it('拒绝：包含 . 路径段', () => {
-    expect(() => assertSafeBaseDir('/Users/./yao')).toThrow(/不得包含/)
+    expect(() => assertSafeBaseDir('/Users/./someone')).toThrow(/不得包含/)
   })
 
   it('拒绝：NUL 字节', () => {
