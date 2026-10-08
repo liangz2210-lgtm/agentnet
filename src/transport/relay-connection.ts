@@ -15,6 +15,7 @@
 import { AbstractRelay } from 'nostr-tools/abstract-relay'
 import { verifyEvent as nostrVerifyEvent, type Event, type Filter } from 'nostr-tools'
 import { SlidingWindowLimiter } from '../common/rate-limit'
+import { DropCounters } from '../common/drop-counters'
 import { nextBackoffDelayMs, slowRetryDelayMs, type RelayPublishResult } from './policy'
 import {
   CONNECT_TIMEOUT_MS,
@@ -60,7 +61,13 @@ export interface RelayConnectionOptions {
   /** 状态变化回调。日志只写事实与 URL，不写消息内容（SPEC §7 规则 6）。 */
   onStatus?: ((url: string, status: RelayStatus) => void) | undefined
   log?: ((line: string) => void) | undefined
+  /** 丢弃计数（按原因码）。入站两道闸各自独立计数，便于分别校准。 */
+  counters?: DropCounters | undefined
 }
+
+/** 入站丢弃的原因码 —— 两道闸必须分开，否则无法判断该调哪一个常量。 */
+export const INCOMING_RATE_LIMIT = 'INCOMING_RATE_LIMIT'
+export const SUBSCRIPTION_EVENT_CAP = 'SUBSCRIPTION_EVENT_CAP'
 
 export interface SubscriptionHandle {
   readonly relayUrl: string
@@ -74,7 +81,6 @@ export class RelayConnection {
   private closing = false
   private status: RelayStatus = 'closed'
   private incomingLimiter: SlidingWindowLimiter
-  private rateDropped = 0
   private readonly limits: {
     maxEventsPerSubscription: number
     incomingRateWindowMs: number
@@ -107,9 +113,28 @@ export class RelayConnection {
     return this.status
   }
 
-  /** 因单连接速率被丢弃的事件数（诊断用，不含内容）。 */
+  /**
+   * 因**单连接速率**被丢弃的事件数（诊断用，不含内容）。
+   * 事件数上限那道闸的丢弃请查 `counters` 的 `SUBSCRIPTION_EVENT_CAP` ——
+   * 两者原先共用一个计数器，根本分不清该调哪个常量。
+   */
   get droppedByRateLimit(): number {
-    return this.rateDropped
+    return this.opts.counters?.countOf(INCOMING_RATE_LIMIT) ?? 0
+  }
+
+  /**
+   * 记一次入站丢弃：计数 + 写日志。
+   * 日志只含**原因码与累计次数**，绝不含事件内容（SPEC §7 规则 6）。
+   * 每次丢弃都打印会刷屏，所以只在"该原因码的第一次"和"每满 100 次"时提示。
+   */
+  private drop(reason: string): void {
+    const counters = this.opts.counters
+    if (counters === undefined) return
+    counters.record(reason)
+    const n = counters.countOf(reason)
+    if (n === 1 || n % 100 === 0) {
+      this.log(`${reason} 累计 ${n} 次（来自 ${this.url}）`)
+    }
   }
 
   private setStatus(status: RelayStatus): void {
@@ -226,12 +251,12 @@ export class RelayConnection {
     const sub = relay.subscribe([...filters], {
       onevent: (evt: Event) => {
         if (!this.incomingLimiter.tryAcquire()) {
-          this.rateDropped += 1
+          this.drop(INCOMING_RATE_LIMIT)
           return
         }
         perSubscription += 1
         if (perSubscription > this.limits.maxEventsPerSubscription) {
-          this.rateDropped += 1
+          this.drop(SUBSCRIPTION_EVENT_CAP)
           return
         }
         onevent(evt)

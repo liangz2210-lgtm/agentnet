@@ -11,6 +11,7 @@ import { buildEnvelope } from '../../src/envelope/sender'
 import { wrapEnvelope } from '../../src/envelope/wrap'
 import { DedupTable } from '../../src/receive/dedup'
 import { createPipeline, type ReceiveOutcome } from '../../src/receive/pipeline'
+import { DropCounters, DELIVERED } from '../../src/common/drop-counters'
 import type { AgentEnvelope } from '../../src/envelope/validate'
 
 /**
@@ -46,17 +47,19 @@ function makeEnvelope(input: Partial<Parameters<typeof buildEnvelope>[0]>): stri
 }
 
 function makePipeline(handler: (e: AgentEnvelope) => void = () => {}) {
-  const rejects: { reason: string; detail: string }[] = []
+  const rejects: { reason: string }[] = []
   const dedup = new DedupTable({ now: () => NOW })
+  const counters = new DropCounters()
   const process = createPipeline({
     ownSecretKey: skB,
     ownPubkey: pkB,
     now: () => NOW,
     dedup,
     handler,
-    onReject: (reason, detail) => rejects.push({ reason, detail }),
+    onReject: (reason) => rejects.push({ reason }),
+    counters,
   })
-  return { process, dedup, rejects }
+  return { process, dedup, rejects, counters }
 }
 
 describe('接收流水线（顺序固定：大小→解封→校验→认证→去重→业务）', () => {

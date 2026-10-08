@@ -16,6 +16,7 @@ import {
   type SubscriptionHandle,
 } from './relay-connection'
 import { planConnections, reportFromResults, giftWrapFilter, type PublishReport, type RelayPublishResult } from './policy'
+import { DropCounters } from '../common/drop-counters'
 import {
   CONNECT_TIMEOUT_MS,
   MAX_RELAY_CONNECTIONS,
@@ -50,6 +51,8 @@ export interface TransportOptions {
   onRelayStatus?: ((url: string, status: RelayStatus) => void) | undefined
   /** 日志只写事实与公钥缩写，不写消息内容（SPEC §7 规则 6）。 */
   log?: ((line: string) => void) | undefined
+  /** 入站丢弃计数（按原因码）。与接收层的计数可以是同一个实例，便于统一汇总。 */
+  counters?: DropCounters | undefined
 }
 
 export interface Subscription {
@@ -121,6 +124,7 @@ export class Transport {
             },
       onStatus: this.opts.onRelayStatus,
       log: this.opts.log,
+      counters: this.opts.counters,
     }
   }
 

@@ -16,6 +16,7 @@ import { validateEnvelope, verifyAuthenticity, type AgentEnvelope, type RejectRe
 import { unwrapGiftWrap } from '../envelope/wrap'
 import { DedupTable } from './dedup'
 import { MAX_GIFT_WRAP_CONTENT_BYTES } from '../transport/constants'
+import { DropCounters, DELIVERED } from '../common/drop-counters'
 
 export interface PipelineOptions {
   ownSecretKey: Uint8Array
@@ -25,8 +26,14 @@ export interface PipelineOptions {
   dedup: DedupTable
   /** 业务处理（第六步）。只拿得到通过全部校验的信封。 */
   handler: (envelope: AgentEnvelope) => void
-  /** 诊断回调：只收原因码与短语，收不到消息内容。 */
-  onReject?: (reason: ReceiveRejectReason, detail: string) => void
+  /**
+   * 诊断回调：只收**原因码**。
+   * ⚠️ 不传 `detail` —— 它里面可能夹带攻击者可控的文本（未知字段名、非法 type 等），
+   * 原样写日志等于把不可信内容送进日志文件（SPEC §7 规则 5/6）。
+   */
+  onReject?: (reason: ReceiveRejectReason) => void
+  /** 丢弃计数（按原因码）。上层汇总后可在退出时打印，用于校准上限。 */
+  counters?: DropCounters
 }
 
 export type ReceiveRejectReason =
@@ -81,6 +88,7 @@ export function createPipeline(opts: PipelineOptions): (event: Event) => Receive
     }
 
     // ── 6. 业务处理 ────────────────────────────────────────────────
+    opts.counters?.record(DELIVERED)
     opts.handler(authenticated.envelope)
     return { ok: true, envelope: authenticated.envelope }
   }
@@ -91,6 +99,8 @@ function reject(
   reason: ReceiveRejectReason,
   detail: string,
 ): ReceiveOutcome {
-  opts.onReject?.(reason, detail)
+  // 每一次丢弃都按原因码计数（校准防御上限的唯一数据来源）
+  opts.counters?.record(reason)
+  opts.onReject?.(reason)
   return { ok: false, reason, detail }
 }

@@ -18,6 +18,7 @@ import { buildEnvelope } from '../envelope/sender'
 import { wrapEnvelope } from '../envelope/wrap'
 import type { Event } from 'nostr-tools'
 import { SlidingWindowLimiter } from '../common/rate-limit'
+import { DropCounters } from '../common/drop-counters'
 import type { PendingPings } from './pending-pings'
 
 export interface AutoReplyOptions {
@@ -89,6 +90,11 @@ export interface HandlerDeps {
   send: (event: Event) => void
   /** text 只到展示层（listen 打印前还会过终端控制字符过滤）。 */
   onText: (fromPubkey: string, envelopeId: string, text: string) => void
+  /**
+   * 丢弃计数。业务层也会丢弃（被限速压掉的 pong、无人认领的 pong），
+   * 这些**同样要计数** —— 否则"自动回复上限"到底误杀了多少永远没有数据。
+   */
+  counters?: DropCounters
 }
 
 /**
@@ -100,18 +106,28 @@ export function handleEnvelope(deps: HandlerDeps, envelope: AgentEnvelope): Repl
     // 只有 ping 触发自动回复
     const decision = deps.autoReply.tryReplyTo(envelope.from)
     if (!decision.allowed) {
+      // 按**具体是哪一道闸**计数：全局 vs 每发送方，将来调的是不同的常量
+      deps.counters?.record(`PONG_SUPPRESSED_${decision.reason}`)
       return { action: 'PONG_SUPPRESSED_RATE_LIMIT' }
     }
     const built = buildPong(deps, envelope.from, envelope.id)
-    if (built === null) return { action: 'PONG_IGNORED_NO_PENDING_PING' }
+    if (built === null) {
+      deps.counters?.record('PONG_BUILD_FAILED')
+      return { action: 'PONG_IGNORED_NO_PENDING_PING' }
+    }
     deps.send(built)
     return { action: 'PONG_SENT' }
   }
 
   if (envelope.type === 'pong') {
     // pong 永不触发自动回复；必须引用我们发出且未完成的 ping
-    if (envelope.payload.kind !== 'pong') return { action: 'PONG_IGNORED_NO_PENDING_PING' }
+    if (envelope.payload.kind !== 'pong') {
+      deps.counters?.record('PONG_UNSOLICITED')
+      return { action: 'PONG_IGNORED_NO_PENDING_PING' }
+    }
     if (!deps.pendingPings.consume(envelope.payload.id)) {
+      // 无人认领的 pong：可能是迟到、被重放，或压根没发过 —— 计数以便观察
+      deps.counters?.record('PONG_UNSOLICITED')
       return { action: 'PONG_IGNORED_NO_PENDING_PING' }
     }
     return { action: 'PONG_ACCEPTED' }

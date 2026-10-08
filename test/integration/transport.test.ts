@@ -20,7 +20,7 @@ import { DedupTable } from '../../src/receive/dedup'
 import { PendingPings } from '../../src/receive/pending-pings'
 import { AutoReplyPolicy } from '../../src/receive/handler'
 import { buildTextMessage } from '../../src/messaging/outgoing'
-import { SlidingWindowLimiter } from '../../src/common/rate-limit'
+import { DropCounters } from '../../src/common/drop-counters'
 import { wsCast } from './helpers/ws-cast'
 
 const relays: NakRelay[] = []
@@ -208,12 +208,78 @@ describe('传输层集成（真实 nak 中继）', () => {
     sender.close()
   })
 
-  it('单连接入站速率上限生效（防御性）', async () => {
-    // 纯单元层面的补充：RelayConnection 的入站闸用的就是这个限流器
-    let t = 0
-    const limiter = new SlidingWindowLimiter(2, 60_000, () => t)
-    expect(limiter.tryAcquire()).toBe(true)
-    expect(limiter.tryAcquire()).toBe(true)
-    expect(limiter.tryAcquire()).toBe(false)
+  it('入站速率闸：超限事件被丢弃，且按 INCOMING_RATE_LIMIT 计数', async () => {
+    const relay = await start()
+    const skR = generateSecretKey()
+    const pkR = getPublicKey(skR)
+
+    // 先投递 5 条，让它们成为"历史消息"（订阅时用 since=now-72h 会全部拉回）
+    const sender = new Transport({ urls: [relay.url], websocketImplementation: wsCast() })
+    await sender.connect()
+    for (let i = 0; i < 5; i++) await sender.publish(textEvent(pkR))
+    await new Promise((r) => setTimeout(r, 600))
+    sender.close()
+
+    const counters = new DropCounters()
+    const receiver = new Transport({
+      urls: [relay.url],
+      websocketImplementation: wsCast(),
+      counters,
+      limits: {
+        maxEventsPerConnectionPerWindow: 2,
+        incomingRateWindowMs: 60_000,
+        maxEventsPerSubscription: 5000,
+      },
+    })
+    await receiver.connect()
+    let received = 0
+    receiver.subscribeGiftWraps(pkR, () => {
+      received += 1
+    })
+    await waitFor(() => received >= 2, 6000)
+    await new Promise((r) => setTimeout(r, 1200))
+    receiver.close()
+
+    expect(received).toBe(2)
+    // 关键：丢弃**被计数**，且挂在速率闸的原因码上
+    expect(counters.countOf('INCOMING_RATE_LIMIT')).toBeGreaterThanOrEqual(3)
+    // 另一道闸不该被误记 —— 否则将来无法判断该调哪个常量
+    expect(counters.countOf('SUBSCRIPTION_EVENT_CAP')).toBe(0)
+  })
+
+  it('订阅事件数闸：超限事件按 SUBSCRIPTION_EVENT_CAP 计数（与速率闸分开）', async () => {
+    const relay = await start()
+    const skR = generateSecretKey()
+    const pkR = getPublicKey(skR)
+
+    const sender = new Transport({ urls: [relay.url], websocketImplementation: wsCast() })
+    await sender.connect()
+    for (let i = 0; i < 5; i++) await sender.publish(textEvent(pkR))
+    await new Promise((r) => setTimeout(r, 600))
+    sender.close()
+
+    const counters = new DropCounters()
+    const receiver = new Transport({
+      urls: [relay.url],
+      websocketImplementation: wsCast(),
+      counters,
+      limits: {
+        maxEventsPerConnectionPerWindow: 5000, // 速率闸放行
+        incomingRateWindowMs: 60_000,
+        maxEventsPerSubscription: 2, // 订阅闸只许 2 条
+      },
+    })
+    await receiver.connect()
+    let received = 0
+    receiver.subscribeGiftWraps(pkR, () => {
+      received += 1
+    })
+    await waitFor(() => received >= 2, 6000)
+    await new Promise((r) => setTimeout(r, 1200))
+    receiver.close()
+
+    expect(received).toBe(2)
+    expect(counters.countOf('SUBSCRIPTION_EVENT_CAP')).toBeGreaterThanOrEqual(3)
+    expect(counters.countOf('INCOMING_RATE_LIMIT')).toBe(0)
   })
 })

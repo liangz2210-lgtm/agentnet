@@ -18,6 +18,7 @@ import { PendingPings } from '../receive/pending-pings'
 import { AutoReplyPolicy, handleEnvelope, type HandlerDeps } from '../receive/handler'
 import { buildTextMessage, buildPingMessage } from '../messaging/outgoing'
 import { sanitizeForDisplay } from '../envelope/sanitize'
+import { DropCounters } from '../common/drop-counters'
 import type { Event } from 'nostr-tools'
 import { readCliConfig, writeCliConfig, resolveRelays } from './config'
 import { parsePubkeyArg, InvalidPubkeyError } from './keys'
@@ -185,10 +186,12 @@ export async function cmdPing(
     return EXIT_OTHER
   }
 
+  const counters = new DropCounters()
   const transport = new Transport({
     urls,
     websocketImplementation: wsImplementation(),
     log: (line) => io.err(`[relay] ${line}`),
+    counters,
     onRelayStatus: (url, status) => {
       if (io.json) io.out(JSON.stringify({ type: 'relay_status', url, status }))
     },
@@ -219,6 +222,7 @@ export async function cmdPing(
         io.out(`[text] ${from}: ${display.text}`)
       }
     },
+    counters,
   }
   const dedup = new DedupTable()
   const handleIncoming = createPipeline({
@@ -226,6 +230,7 @@ export async function cmdPing(
     ownPubkey: id.publicKey,
     now: nowSeconds,
     dedup,
+    counters,
     handler: (envelope) => {
       const outcome = handleEnvelope(handlerDeps, envelope)
       if (outcome.action === 'PONG_ACCEPTED') {
@@ -233,7 +238,8 @@ export async function cmdPing(
       }
     },
     onReject: (reason) => {
-      if (reason !== 'DUPLICATE') io.err(`[receive] 拒绝：${reason}`)
+      // 只记原因码与累计次数 —— detail 里可能夹带攻击者可控文本，不写日志
+      if (reason !== 'DUPLICATE') io.err(`[receive] 丢弃 ${reason}（累计 ${counters.countOf(reason)} 次）`)
     },
   })
 
@@ -291,10 +297,12 @@ export async function cmdListen(
   const id = identityOrExit(env, io)
   const urls = resolveRelays(args.relays, env)
 
+  const counters = new DropCounters()
   const transport = new Transport({
     urls,
     websocketImplementation: wsImplementation(),
     log: (line) => io.err(`[relay] ${line}`),
+    counters,
     onRelayStatus: (url, status) => {
       // 状态变化时打印（用户定稿）
       if (io.json) io.out(JSON.stringify({ type: 'relay_status', url, status }))
@@ -314,6 +322,7 @@ export async function cmdListen(
         if (!report.delivered) io.err('[relay] 自动回复未能送达任何中继')
       })
     },
+    counters,
     onText: (from, envelopeId, text) => {
       // 文本只展示，不执行，不传 LLM（SPEC §7 规则 5）；发送者显示**完整公钥**
       const display = sanitizeForDisplay(text)
@@ -338,12 +347,15 @@ export async function cmdListen(
     ownPubkey: id.publicKey,
     now: nowSeconds,
     dedup,
+    counters,
     handler: (envelope) => {
       handleEnvelope(handlerDeps, envelope)
     },
-    onReject: (reason, detail) => {
-      // 只记原因码，不记内容（SPEC §7 规则 6）
-      io.err(`[receive] 拒绝 ${reason}（${detail.slice(0, 60)}）`)
+    onReject: (reason) => {
+      // **只记原因码与累计次数**（SPEC §7 规则 6）。
+      // 这里原先会把 detail 的前 60 字符一起写进日志 —— 而 detail 里可能夹带
+      // 攻击者可控的文本（未知字段名、非法 type 值等），等于把不可信内容送进日志。
+      io.err(`[receive] 丢弃 ${reason}（累计 ${counters.countOf(reason)} 次）`)
     },
   })
 
@@ -378,6 +390,13 @@ export async function cmdListen(
     process.on('SIGINT', stop)
     process.on('SIGTERM', stop)
   })
+
+  // 退出前汇总丢弃计数 —— 这是将来校准每一个防御上限的**唯一数据来源**
+  if (io.json) {
+    io.out(JSON.stringify({ type: 'summary', drops: counters.snapshot(), total: counters.total() }))
+  } else {
+    io.err(`[summary] ${counters.formatSummary()}`)
+  }
   return EXIT_OK
 }
 
