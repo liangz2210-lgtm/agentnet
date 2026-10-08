@@ -698,3 +698,74 @@ gift wrap 的 `p` 标签是明文的，中继虽读不懂内容，却能知道�
 | N11 | TypeScript 7 **已移除** `moduleResolution=node10`（`node` 同样） | ✅ 已实测 | `node node_modules/typescript/bin/tsc -p <cfg>`（`moduleResolution: node` / `node10`） | 两者均 `error TS5108: Option 'moduleResolution=node10' has been removed`；`bundler` 通过 |
 | N12 | `module: commonjs` 不写 `moduleResolution` 时**能做无扩展名解析** | ✅ 已实测 | 最小工程 `src/a.ts` + `src/b.ts`（`import { a } from './a'`）→ `tsc` | 输出 `const a_1 = require("./a")`，Node 可解析 |
 | N13 | 单个 nak 中继**会对重复 event id 去重** | ✅ 已实测 | 同一 wrap 事件连续 `deliver` 两次，观察接收方 | 只收到 1 条，且无 `DUPLICATE` —— 说明第二次根本没推送，而非被去重拦下 |
+
+---
+
+## 21. 事故记录：DECISIONS.md 被整体重写时尾部截断
+
+### 发生了什么
+
+2026-10-09 02:02，本文件在工作区中被**整体重写**：markdown 被重新排版
+（表格按列对齐填充、段落换行加了行尾双空格），并且**尾部被截断** ——
+559 行 → **407 行**，§18（否定性断言清单 N1–N10）、§19（路线图 R1–R5）
+与已知限制 **L5–L9** 全部消失。全程零报错，`git status` 只显示一个 `M`。
+
+### 取证过程（结论都有可复核的证据）
+
+| 步骤 | 手段 | 结果 |
+|---|---|---|
+| 1 | 查仓库内格式化配置：`.editorconfig` / `.prettierrc*` / `.vscode` | **均无** |
+| 2 | 查 `package.json` 的 format/lint 脚本 | **无** |
+| 3 | 查 git hooks（`.git/hooks` 非 sample 文件 + `core.hooksPath`） | **无** |
+| 4 | 查本机/全局是否装了 prettier / dprint / biome / markdownlint | **都没装** |
+| 5 | `git fsck --dangling` | 找到两个 unreachable blob：一个是 `check-repo-integrity.mjs`，另一个是 **545 行的 DECISIONS.md**（更早的中间状态，比 HEAD 少两节） |
+| 6 | 在 `~/.workbuddy/file-history/` 找到该文件的**版本链** | **v8 = 559 行（= 已提交 HEAD）→ v9 = 407 行（截断版）→ v10 = 700 行（恢复后）** |
+
+**第 6 步是决定性的**：拿到截断版原文后就能逐行比对，不必靠推测。
+
+### 有没有新内容在恢复时被覆盖
+
+**没有。** 把 v8 与 v9 归一化（去掉表格填充、行尾空格、空行差异）后再比对：
+
+- v8 有而 v9 没有：**146 行**（就是被截掉的部分）
+- v9 有而 v8 没有：**仅 7 行**，其中 6 行是表格分隔行（排版产物），
+  剩下 1 行是「已有身份时 `init` 绝不覆盖；私钥一旦丢失无法找回，README 必须写明」——
+  这是 v8 里已有内容的**同义改写**，而且改写后反而丢了 v8 原有的
+  「不提供 `--force`」这一句。
+
+所以 `git checkout HEAD -- DECISIONS.md` 恢复的是**严格更完整**的版本，没有丢任何新内容。
+
+### 元凶
+
+不是外部格式化器（1–4 步已排除），而是 **agent 自己的文件写入路径**：
+某个会话为了"加一节"而**整体重写**了这个文件，重写时（a）重新排版了全文、
+（b）在尾部截断。大文件整文件重写 + 输出长度受限，是这类事故的典型形态。
+
+### 规则（此后必须遵守）
+
+1. **长文档（DECISIONS.md / SPEC.md / ACCEPTANCE.md / LIMITS.md / README.md）
+   禁止整文件 `Write` 重写。** 只准用 `Edit`（精确匹配替换）或 `cat >>`（追加）。
+   要改中间的一段，就只改那一段。
+2. **写之前先保证可回滚**：先 `git add` 当前版本，或先 `cp` 一份到 `test/.tmp/`。
+   这次能救回来，完全是因为内容已经在 HEAD 里。
+3. **每次提交前跑 `pnpm check:repo`。** 它会断言必需章节存在、且行数不得骤降
+   （见下）。
+4. **大文件格式化后要 diff 行数**。行数不守恒的重排就是事故信号。
+
+### 护栏（已落地）
+
+`scripts/check-repo-integrity.mjs` 的第 [5] 组断言：
+
+- DECISIONS.md 必须含 `## 0. 威胁模型`、`## 17. 已知限制`、`## 18. 否定性断言清单`、
+  `## 19. 路线图补充`、`## 20. CLI 定稿`，以及 `| L1 |` … `| L9 |` 每一行
+- 行数与**上一次提交**比，跌幅超过 `max(10 行, 2%)` 即失败
+
+两条规则的放行方式不同，故意如此：
+
+- **章节断言是绝对的**：真要删章节，得改脚本里的 `REQUIRED_DOC_STRUCTURE`
+  —— 这个改动会出现在评审里，藏不住。
+- **行数只是启发式**：有意的删减用 `AGENTNET_ALLOW_DOC_SHRINK=1 pnpm check:repo`
+  显式放行。必须是显式的，不能靠习惯性无视。
+
+护栏本身也做过**空跑验证**：把 DECISIONS.md 手动截到 407 行跑一次，
+自检报出 14 项失败（含 `-293 行`），退出码 1；恢复后 81 项全过。
