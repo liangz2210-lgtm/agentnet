@@ -99,6 +99,8 @@ export interface ListenProc {
   waitForStderr(re: RegExp, timeoutMs?: number): Promise<string | null>
   stop(): Promise<number | null>
   readonly pid: number | undefined
+  /** 进程是否**仍然活着**（F1 回归用：中继断开后 listen 不许自己退出）。 */
+  alive(): boolean
 }
 
 /** 启动常驻的 listen 进程（它会一直跑到收到 SIGTERM）。 */
@@ -138,6 +140,7 @@ export function spawnListen(
     pid: child.pid,
     stdout: () => stdout,
     stderr: () => stderr,
+    alive: () => child.exitCode === null && child.signalCode === null,
     waitForLine: (re, t = 8000) => waitIn(() => stdout, re, t),
     waitForStderr: (re, t = 8000) => waitIn(() => stderr, re, t),
     stop: async () => {

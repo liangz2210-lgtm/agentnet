@@ -65,8 +65,9 @@ async function newAgent(name: string): Promise<{ home: string; pk: string }> {
   return { home, pk }
 }
 
-function listen(home: string): ListenProc {
-  const l = spawnListen(home, [nak.url])
+/** 默认连共享的那台中继；F1 回归用例需要指向一台「注定要被杀掉」的中继。 */
+function listen(home: string, urls: readonly string[] = [nak.url]): ListenProc {
+  const l = spawnListen(home, urls)
   listeners.push(l)
   return l
 }
@@ -387,6 +388,28 @@ describe('S7 中继不可达', () => {
     const r = spawnSync('pgrep', ['-f', 'dist/cli/bin.js'], { encoding: 'utf8' })
     expect((r.stdout ?? '').trim()).toBe('')
   })
+})
+
+// ── 审计 F1 回归 ─────────────────────────────────────────────────────
+
+describe('F1 回归：中继断开后 listen 不得静默退出', () => {
+  it('中继进程被杀后，listen 仍活着并进入重连状态（而不是以退出码 0 消失）', async () => {
+    // 用**独立的一台中继**：把它杀掉不会波及其它用例共享的那台。
+    const doomed = await startNak()
+    const bob = await newAgent('bob')
+    const b = listen(bob.home, [doomed.url])
+    expect(await b.waitForStderr(/listening/)).not.toBeNull()
+
+    await doomed.stop()
+
+    // F1 的实测数字是「断线后 1515ms 退出」，这里等 2500ms 足以覆盖。
+    await new Promise((r) => setTimeout(r, 2500))
+
+    // 关键断言：进程还在。退出码 0 的静默退出比挂住危险得多 ——
+    // 脚本会以为它正常结束了，于是没人再收消息。
+    expect(b.alive()).toBe(true)
+    expect(b.stderr()).toMatch(/reconnecting|slow-retry/)
+  }, 40_000)
 })
 
 // ── S8 无残留 ────────────────────────────────────────────────────────

@@ -16,6 +16,7 @@ import { AbstractRelay } from 'nostr-tools/abstract-relay'
 import { verifyEvent as nostrVerifyEvent, type Event, type Filter } from 'nostr-tools'
 import { SlidingWindowLimiter } from '../common/rate-limit'
 import { DropCounters } from '../common/drop-counters'
+import { sanitizeForLog } from '../envelope/sanitize'
 import { nextBackoffDelayMs, slowRetryDelayMs, type RelayPublishResult } from './policy'
 import {
   CONNECT_TIMEOUT_MS,
@@ -163,6 +164,14 @@ export class RelayConnection {
           : { websocketImplementation: this.opts.websocketImplementation }),
       }
       const relay = new AbstractRelay(this.url, relayOpts)
+      // ⚠️ NOTICE 是**中继构造的不可信输入**（审计发现 F2 的根因）。
+      // nostr-tools 的默认实现是 `onnotice = (msg) => console.debug(...)`，
+      // 会把中继发来的裸 ESC / `ESC[2J` / OSC 标题串**直接写进 stdout** ——
+      // 完全绕过接收侧的 `sanitize.ts`，并且破坏 `--json`「每行一个 JSON」的契约。
+      // 这里必须接管：先清洗、再只进日志（stderr），且截断到日志长度上限。
+      relay.onnotice = (msg: string) => {
+        this.log(`relay notice: ${sanitizeForLog(msg)}`)
+      }
       await relay.connect({ timeout: this.opts.connectTimeoutMs ?? CONNECT_TIMEOUT_MS })
       relay.onclose = () => {
         this.relay = null
@@ -208,8 +217,15 @@ export class RelayConnection {
       this.reconnectTimer = null
       void this.connect()
     }, delay)
-    // 不阻止进程退出：CLI 是短命进程，定时器不该拖住它
-    timer.unref?.()
+    // ⚠️ **这里绝不能 `unref()`**（审计发现 F1 的根因）。
+    // 曾经的写法是 `timer.unref?.()`，理由写着"CLI 是短命进程，定时器不该拖住它"——
+    // 但这句话只在「调用方一定会在退出前 close()」时才成立，而 close() 本来就会
+    // clearTimeout，unref 是多余且有害的：中继一断开，ws 句柄消失，
+    // 唯一剩下的重连定时器又是 unref 的，事件循环立刻变空，
+    // `listen` 于是**以退出码 0 静默退出**（实测：断线后 1515ms 退出、无 summary）。
+    // 退出码 0 意味着脚本会以为它正常结束了 —— 比挂住危险得多。
+    // 有未完成的重连就是**有待办工作**，理应把事件循环撑住。
+    // 契约：不想让进程被撑住的调用方，请调用 `close()`（它会清掉定时器）。
     this.reconnectTimer = timer
   }
 
