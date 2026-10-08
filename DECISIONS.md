@@ -123,6 +123,80 @@ var randomNow = () => Math.round(now() - Math.random() * TWO_DAYS);
 
 ---
 
+## G. 第 5 步（CLI / 端到端）实测事实
+
+> 全部于 2026-10-08 在本机实测。前三条是**端到端测试抓出来的实现 bug**，
+> 它们共同说明一件事：**单元测试全绿 ≠ 命令真的按规格工作**。
+
+### G1. 🔴 `nip17.wrapEvent` 的 rumor 时间戳**写死取系统时钟，传不进去**
+
+源码 `nostr-tools/lib/esm/nip17.js`：
+
+```js
+function createEvent(recipients, message, conversationTitle, replyTo) {
+  const baseEvent = { created_at: Math.ceil(Date.now() / 1e3), kind: 14, tags: [], content: message }
+  ...
+}
+function wrapEvent2(senderPrivateKey, recipient, message, ...) {
+  return wrapEvent(createEvent(recipient, message, ...), senderPrivateKey, recipient.publicKey)
+}
+```
+
+`createRumor(event, sk)` 里 `rumor = { created_at: now(), ...event, pubkey }` —— 展开在后，
+所以 **event 的 `created_at`（`Math.ceil`）赢**，调用方注入的时钟被完全忽略。
+
+后果：信封的 `expires_at` 由注入时钟 `Math.floor(Date.now()/1e3)` 算出，而 `rumor.created_at`
+是 `Math.ceil(...)`，两者差 1 秒。`--ttl 1` 时接收侧算出的有效期为 **0**，
+消息刚发出就被判 `LIFETIME_NOT_POSITIVE`。
+
+**修法**：不用 `nip17.wrapEvent`，改用 `nip59` 三步自拼并**显式传 `created_at`**
+（`createRumor` → `createSeal` → `createWrap`）。实测后 `expires_at − rumor.created_at`
+严格等于 ttl（`test/unit/outgoing.test.ts` 三条断言，含 `ttl=1`）。
+
+### G2. 🔴 TypeScript 7 **已移除 `moduleResolution=node10`**（`node` 同样被移除）
+
+```
+$ node node_modules/typescript/bin/tsc -p tsconfig.build.json
+tsconfig.json(1,60): error TS5108: Option 'moduleResolution=node10' has been removed.
+```
+
+而 `module: commonjs` **不写** `moduleResolution` 时，TS 7 会做传统的无扩展名解析，
+输出 `require("./a")` —— Node 的 CommonJS 解析器能找到 `./a.js`。
+`moduleResolution: bundler` 也实测可用且同样输出 `require("./a")`。
+
+结论（`tsconfig.build.json`）：`extends` 根配置（继承 `bundler`）+ `module: commonjs`
++ `rootDir: src`，**不写** `moduleResolution`。省掉了给 98 处相对导入补 `.js` 后缀。
+
+### G3. 🔴 单个 nak 中继**按 event id 去重**，同事件发两次只推一次
+
+端到端里"同一条消息投递两次"的用例第一次失败：第二次投递后接收方只收到一条，
+且 stderr 里**没有** `DUPLICATE` —— 不是去重生效了，而是**中继根本没推第二次**
+（NIP-01 中继按 `event.id` 存储，重复事件直接丢弃）。
+
+正确构造：两次**独立包装**（外层 wrap 密钥与时间戳都随机 → 两个不同的 Nostr 事件），
+但**内层信封 id 相同** —— 这才是重放攻击的样子，且必须被应用层去重键 `(from, id)` 拦下。
+修改后用例通过，stderr 出现 `DUPLICATE`。
+
+### G4. 数据目录不能放在 `os.tmpdir()` 下
+
+macOS 的 `os.tmpdir()` 落到 `/private/tmp`（`1777`，sticky + 世界可写），
+`assertAncestrySafe` 会直接拒绝：
+
+```
+数据目录路径不安全（不得直接位于带 sticky 位的共享可写目录下）：/private/tmp
+```
+
+端到端与单测因此一律把 `AGENTNET_HOME` 建在**项目内**的 `test/.tmp/` 下
+（`mkdtempSync` 默认 `0700`）。另：`mkdir -p` 建出的目录是 `755`，同样会被权限检查拒绝。
+
+### G5. 单字符 CSI（U+009B）只删字符本身是不够的
+
+`stripTerminalControls('a\u009B2Jb')` 原实现输出 `a2Jb` —— U+009B 被剔除，
+但它引入的控制序列 `2J`（清屏）作为**明文**留在了终端里。
+修法：先按 `\u009B[0-9;?]*[ -/]*[@-~]` 整条吞掉，再由 `STRAY_CONTROL` 兜底删孤立字符。
+
+---
+
 # 第二部分 · 决定及理由
 
 ## 0. 威胁模型（先划边界，再谈防线）
@@ -193,6 +267,25 @@ var randomNow = () => Math.round(now() - Math.random() * TWO_DAYS);
 
 **理由**：崩溃是不可恢复的故障且会伪装成正常（谎报 fulfilled）；抑制住之后还要把
 「哪个中继成功、哪个失败」如实上报，否则「一个不可用仍送达」这条验收无法被证明。
+
+### ⚠️ 全部防御上限都是可配置常量，且**无数据支撑**
+
+`src/transport/constants.ts` 里的每一个上限（`MAX_RELAY_CONNECTIONS`、`MAX_EVENTS_PER_SUBSCRIPTION`、
+`INCOMING_RATE_WINDOW_MS`、`MAX_EVENTS_PER_CONNECTION_PER_WINDOW`、重连退避系列、
+`CONNECT_TIMEOUT_MS`、`MAX_GIFT_WRAP_CONTENT_BYTES`）以及接收侧的 `MAX_AUTO_REPLIES_GLOBAL`、
+`MAX_DISPLAY_LINE_LENGTH`，都是**凭直觉取的防御值**：
+
+- **没有任何压测、没有真实流量样本、没有误杀率统计**
+- 它们的作用是"先挡住最粗暴的滥用"，不是"调到最优"
+- 因此全部写成**具名常量 + 可通过 `TransportLimits` / 构造参数覆盖**，
+  而不是散落在代码里的字面量
+
+> **校准条件**：真实使用后出现误杀（正常消息被限速丢弃）或被打穿（上限形同虚设），
+> 以观测数据替换这里的取值，并把数据一并记入本文件。
+
+同理，重连策略的「6 次快速重试 → 转慢速重试（约 5 分钟 + 抖动）」也是无数据支撑的取值。
+**不永久放弃**是刻意的：一个长期常驻的 agent 如果在网络抖动后永久放弃某个中继，
+就再也收不到发给它的消息了 —— 而它自己察觉不到这件事。
 
 ## 3. 新增依赖 `ws`（MIT）
 
@@ -557,3 +650,51 @@ gift wrap 的 `p` 标签是明文的，中继虽读不懂内容，却能知道�
 **身份模块当前状态：已冻结**（2026-10-08）。冻结范围 = `src/identity/`、`src/config/paths.ts`、
 `src/config/dirguard.ts`、`src/config/uid.ts`。
 此后任何改动都应先说明它对应哪一条审计发现，并同步更新本文件与第 18 节。
+
+---
+
+## 20. CLI 定稿（里程碑 1 的用户界面）
+
+**命令集**：`init [--name]` / `whoami` / `send <公钥> <文本> [--ttl]` / `ping <公钥> [--timeout]` / `listen`
+
+| 约定 | 决定 | 理由 |
+|---|---|---|
+| 公钥入参 | 接受 64 位 hex **与** `npub1…`，统一转小写 hex 校验；**`nsec1` / `ncryptsec1` / 128 位 hex 一律拒绝**并提示"私钥不走命令行" | 私钥一旦进命令行就会进 shell 历史与进程列表（SPEC §7 规则 2） |
+| 中继来源 | 命令行 `--relay` > `AGENTNET_RELAYS` > `config.json`，**高优先级非空时完全取代**（不合并） | 合并会让"我只想用这一个"变成"多连了一堆" |
+| 输出 | 正常 → stdout，错误/诊断 → stderr；`--json` 时**每行一个 JSON 对象** | 便于管道与日志采集；stderr 分离让错误不会污染数据流 |
+| 退出码 | `0` 成功 / `1` 其他 / `2` 用法 / `3` 无身份 / `4` 发送未被任何中继确认 / `5` ping 超时 | 脚本可据此分支，不必解析人话 |
+| 进程生命周期 | `send` / `ping` 完成后**必须自行退出**；`listen` 常驻，收到 `SIGINT`/`SIGTERM` 后关闭连接并退出 0 | 不自行退出会让调用方永久挂起 |
+| 启动失败 | `listen` 在**所有中继都不可达**时报错并以非零码退出 | 静默"假装在听"比直接失败危险得多 |
+| 中继状态 | 状态变化时打印（`connecting`/`connected`/`reconnecting`/`slow-retry`/`closed`） | 长驻进程必须让用户知道它到底连着没有 |
+
+### 显示侧的四条硬规则（SPEC §7 规则 5 的落地）
+
+1. 输出前清洗：**ESC 序列、C0/C1 控制字符（含 0x9B 单字符 CSI）、
+   双向控制字符（U+202A–202E、U+2066–2069）、零宽字符（U+200B–200D、U+2060、U+FEFF）** 全部剔除
+2. 发送者显示**完整公钥**（64 位 hex），**不用缩写** —— 缩写让"确认对方身份"这件事无法完成
+3. 收到的文本**只展示**，不执行、不传给任何 LLM
+4. 单行超 2000 字符截断，**并追加 `…[已截断]`** —— "看起来完整的一行"与"被截断的一行"
+   对审阅者是完全不同的信号，静默截断等于说谎
+
+### 端到端测试（真实进程，不是函数调用）
+
+**决定**：`test/e2e/` 一律 `spawn` 真实的 `dist/cli/bin.js`，用两个隔离的 `AGENTNET_HOME`
++ 随机端口的 nak。并且 **`ensureBuilt()` 每次都重新构建**。
+
+**理由**：这一层抓到了三个 `run()` 单元测试看不见的 bug：
+
+1. `CommandExitError` 未被 `run()` 捕获 → "无身份"退出码变成 `1` 并打印一整串堆栈（应为 `3`）
+2. `--ttl` 在 CLI 层被解析、被校验，却**从未传给 `buildTextMessage`**（G1 之前的形态）
+3. 改完实现后测试仍失败 —— 因为 `ensureBuilt()` 只在 dist 缺失时构建，
+   测试一直在跑**改之前那份二进制**
+
+> 教训：**"端到端"里的那个"端"必须是当前源码的产物**，否则它验证的是历史。
+> `run()` 覆盖了命令层，但 `main() → process.exit(code)` 这一层只有真进程能覆盖。
+
+### 本轮新增的否定性断言
+
+| # | 断言 | 状态 | 实测命令 | 观测 |
+|---|---|---|---|---|
+| N11 | TypeScript 7 **已移除** `moduleResolution=node10`（`node` 同样） | ✅ 已实测 | `node node_modules/typescript/bin/tsc -p <cfg>`（`moduleResolution: node` / `node10`） | 两者均 `error TS5108: Option 'moduleResolution=node10' has been removed`；`bundler` 通过 |
+| N12 | `module: commonjs` 不写 `moduleResolution` 时**能做无扩展名解析** | ✅ 已实测 | 最小工程 `src/a.ts` + `src/b.ts`（`import { a } from './a'`）→ `tsc` | 输出 `const a_1 = require("./a")`，Node 可解析 |
+| N13 | 单个 nak 中继**会对重复 event id 去重** | ✅ 已实测 | 同一 wrap 事件连续 `deliver` 两次，观察接收方 | 只收到 1 条，且无 `DUPLICATE` —— 说明第二次根本没推送，而非被去重拦下 |

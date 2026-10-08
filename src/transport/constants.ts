@@ -3,7 +3,7 @@
  *
  * ⚠️ 除了 72h 回溯窗口（有 NIP-59 实测依据，见 DECISIONS §4），
  * 其余全部是**无数据支撑的防御性取值**：既没做过压测也没估算过正常流量。
- * 观测到误杀时优先调这些常量，而不是改结构。
+ * 全部做成可配置常量，**待真实使用后校准**；观测到误杀时调配置，不改结构。
  */
 
 /** 订阅回溯窗口：gift wrap 时间戳随机回溯 0~48h（NIP-59 实测硬上限），取 72h = 48h × 1.5。 */
@@ -27,8 +27,14 @@ export const RECONNECT_BASE_DELAY_MS = 1_000
 /** 重连退避：延迟上限。 */
 export const RECONNECT_MAX_DELAY_MS = 30_000
 
-/** 重连退避：连续失败多少次后放弃该中继（进程存活期间不再自动重连）。 */
+/** 重连退避：连续失败多少次后从快速退避转入慢速重试（**不永久放弃**）。 */
 export const RECONNECT_MAX_ATTEMPTS = 6
+
+/** 慢速重试的间隔（约 5 分钟一次），叠加随机抖动。 */
+export const SLOW_RETRY_INTERVAL_MS = 5 * 60 * 1000
+
+/** 慢速重试的抖动幅度：±30s，避免多进程同拍重试。 */
+export const SLOW_RETRY_JITTER_MS = 30 * 1000
 
 /** 建立单条中继连接的超时。 */
 export const CONNECT_TIMEOUT_MS = 10_000

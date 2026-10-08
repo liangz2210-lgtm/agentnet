@@ -1,7 +1,13 @@
-export { Transport, type TransportOptions, type Subscription } from './transport'
-export { RelayConnection, type RelayConnectionOptions } from './relay-connection'
+export { Transport, type TransportOptions, type TransportLimits, type Subscription } from './transport'
+export {
+  RelayConnection,
+  type RelayConnectionOptions,
+  type RelayStatus,
+  type SubscriptionHandle,
+} from './relay-connection'
 export {
   nextBackoffDelayMs,
+  slowRetryDelayMs,
   planConnections,
   reportFromResults,
   giftWrapFilter,

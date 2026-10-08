@@ -13,6 +13,19 @@ export function nextBackoffDelayMs(
   return Math.min(scaled, maxMs)
 }
 
+/**
+ * 慢速重试延迟：基准间隔 ± 抖动（约 5 分钟 ± 30s）。
+ * **永不放弃** —— 中继可能只是暂时下线，进程活着就该继续试。
+ */
+export function slowRetryDelayMs(
+  intervalMs: number,
+  jitterMs: number,
+  random: () => number = Math.random,
+): number {
+  const jitter = (random() * 2 - 1) * jitterMs
+  return Math.max(1000, Math.round(intervalMs + jitter))
+}
+
 export interface RelayPublishResult {
   url: string
   ok: boolean

@@ -29,6 +29,7 @@ const REQUIRED_TRACKED = [
   'PLAN-M1.md',
   'DECISIONS.md',
   'README.md',
+  'ACCEPTANCE.md',
   'package.json',
   'pnpm-lock.yaml',
   'tsconfig.json',
@@ -47,6 +48,18 @@ const REQUIRED_TRACKED = [
   'src/receive/pipeline.ts',
   'src/receive/dedup.ts',
   'src/messaging/outgoing.ts',
+  'src/cli/main.ts',
+  'src/cli/commands.ts',
+  'src/cli/keys.ts',
+  'src/cli/config.ts',
+  'src/cli/exit-codes.ts',
+  'src/cli/bin.ts',
+  'scripts/build-cli.mjs',
+  'tsconfig.build.json',
+  'test/unit/outgoing.test.ts',
+  'test/e2e/cli.test.ts',
+  'test/e2e/helpers/cli.ts',
+  'test/e2e/helpers/raw.ts',
   'test/unit/identity.test.ts',
   'test/unit/keyfile.test.ts',
   'test/unit/paths.test.ts',
@@ -58,7 +71,7 @@ const REQUIRED_TRACKED = [
 ]
 
 /** 关键目录：目录下至少要有一个被跟踪的文件。 */
-const REQUIRED_DIRS = ['src/config', 'src/identity', 'src/envelope', 'src/transport', 'src/receive', 'src/messaging', 'src/common', 'test/unit', 'test/integration']
+const REQUIRED_DIRS = ['src/config', 'src/identity', 'src/envelope', 'src/transport', 'src/receive', 'src/messaging', 'src/common', 'src/cli', 'test/unit', 'test/integration', 'test/e2e']
 
 /** 必须被忽略的私钥类/敏感文件形态（这些路径可以不存在）。 */
 const REQUIRED_IGNORED = [
@@ -81,6 +94,7 @@ const MUST_NOT_IGNORE = [
 
 const failures = []
 const passes = []
+const warnings = []
 
 function git(args) {
   const r = spawnSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' })
@@ -107,14 +121,22 @@ console.log('仓库完整性自检\n' + '─'.repeat(56))
 const tracked = trackedFiles()
 
 if (failures.length === 0) {
-  console.log('\n[1] 关键文件必须被 git 跟踪')
+  console.log('\n[1] 关键文件必须存在、未被忽略、且已 git add')
   for (const f of REQUIRED_TRACKED) {
     if (tracked.has(f)) {
       passes.push(`tracked: ${f}`)
-    } else if (!existsSync(join(REPO_ROOT, f))) {
+      continue
+    }
+    if (!existsSync(join(REPO_ROOT, f))) {
       failures.push(`文件不存在且未被跟踪：${f}`)
+      continue
+    }
+    // 真正要抓的是"被忽略"，不是"还没 add" —— 后者只是流程提醒，
+    // 混为一谈会让新增文件的每一次提交都被自检拦下，进而被习惯性绕过。
+    if (isIgnored(f)) {
+      failures.push(`文件被 .gitignore 忽略（误伤，必须修 .gitignore）：${f}`)
     } else {
-      failures.push(`文件存在但未被 git 跟踪（极可能被 .gitignore 误伤）：${f}`)
+      warnings.push(`文件存在但尚未 git add：${f}`)
     }
   }
 
@@ -148,6 +170,10 @@ if (failures.length === 0) {
 }
 
 console.log(`\n  通过 ${passes.length} 项`)
+if (warnings.length > 0) {
+  console.log(`\n⚠ 提醒 ${warnings.length} 项（不阻断提交）：`)
+  for (const w of warnings) console.log(`   - ${w}`)
+}
 if (failures.length > 0) {
   console.log(`\n✗ 未通过 ${failures.length} 项：`)
   for (const f of failures) console.log(`   - ${f}`)

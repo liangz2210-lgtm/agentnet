@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   giftWrapFilter,
+  slowRetryDelayMs,
   nextBackoffDelayMs,
   planConnections,
   reportFromResults,
@@ -70,5 +71,25 @@ describe('giftWrapFilter（订阅过滤器）', () => {
     expect(filter.kinds).toEqual([1059])
     expect(filter['#p']).toEqual(['a'.repeat(64)])
     expect(filter.since).toBe(1_700_000_000 - 3 * 24 * 60 * 60)
+  })
+})
+
+describe('slowRetryDelayMs（慢速重试，永不放弃）', () => {
+  it('基准间隔 ± 抖动，永不超出 [interval−jitter, interval+jitter]', () => {
+    for (let i = 0; i < 50; i++) {
+      const d = slowRetryDelayMs(5 * 60 * 1000, 30 * 1000)
+      expect(d).toBeGreaterThanOrEqual(5 * 60 * 1000 - 30 * 1000)
+      expect(d).toBeLessThanOrEqual(5 * 60 * 1000 + 30 * 1000)
+    }
+  })
+
+  it('随机源可注入（测试确定性）：0 → −抖动，1 → +抖动，0.5 → 基准', () => {
+    expect(slowRetryDelayMs(300_000, 30_000, () => 0)).toBe(270_000)
+    expect(slowRetryDelayMs(300_000, 30_000, () => 1)).toBe(330_000)
+    expect(slowRetryDelayMs(300_000, 30_000, () => 0.5)).toBe(300_000)
+  })
+
+  it('结果有下限（≥1s），防止配置错误导致疯狂重试', () => {
+    expect(slowRetryDelayMs(0, 0, () => 1)).toBeGreaterThanOrEqual(1000)
   })
 })

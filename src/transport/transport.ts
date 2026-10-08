@@ -9,29 +9,47 @@
  */
 
 import type { Event } from 'nostr-tools'
-import { RelayConnection, type RelayConnectionOptions, type SubscriptionHandle } from './relay-connection'
+import {
+  RelayConnection,
+  type RelayConnectionOptions,
+  type RelayStatus,
+  type SubscriptionHandle,
+} from './relay-connection'
 import { planConnections, reportFromResults, giftWrapFilter, type PublishReport, type RelayPublishResult } from './policy'
 import {
   CONNECT_TIMEOUT_MS,
   MAX_RELAY_CONNECTIONS,
-  PUBLISH_TIMEOUT_MS,
   RECONNECT_BASE_DELAY_MS,
   RECONNECT_MAX_ATTEMPTS,
   RECONNECT_MAX_DELAY_MS,
+  SLOW_RETRY_INTERVAL_MS,
+  SLOW_RETRY_JITTER_MS,
   SUBSCRIPTION_LOOKBACK_SECONDS,
 } from './constants'
 
+/** 传输层的可配置上限（全部无数据支撑，待真实使用后校准 —— DECISIONS §2）。 */
+export interface TransportLimits {
+  maxConnections?: number | undefined
+  maxEventsPerSubscription?: number | undefined
+  incomingRateWindowMs?: number | undefined
+  maxEventsPerConnectionPerWindow?: number | undefined
+}
+
 export interface TransportOptions {
   urls: readonly string[]
-  websocketImplementation?: typeof WebSocket
-  connectTimeoutMs?: number
-  publishTimeoutMs?: number
-  reconnectBaseDelayMs?: number
-  reconnectMaxDelayMs?: number
-  reconnectMaxAttempts?: number
-  maxConnections?: number
+  websocketImplementation?: typeof WebSocket | undefined
+  connectTimeoutMs?: number | undefined
+  reconnectBaseDelayMs?: number | undefined
+  reconnectMaxDelayMs?: number | undefined
+  reconnectMaxAttempts?: number | undefined
+  slowRetryIntervalMs?: number | undefined
+  slowRetryJitterMs?: number | undefined
+  maxConnections?: number | undefined
+  limits?: TransportLimits | undefined
+  /** 中继状态变化回调（listen 用它显示各中继状态）。 */
+  onRelayStatus?: ((url: string, status: RelayStatus) => void) | undefined
   /** 日志只写事实与公钥缩写，不写消息内容（SPEC §7 规则 6）。 */
-  log?: (line: string) => void
+  log?: ((line: string) => void) | undefined
 }
 
 export interface Subscription {
@@ -84,12 +102,24 @@ export class Transport {
   }
 
   private connectionOptions(): RelayConnectionOptions {
+    const limits = this.opts.limits
     return {
       websocketImplementation: this.opts.websocketImplementation,
       connectTimeoutMs: this.opts.connectTimeoutMs ?? CONNECT_TIMEOUT_MS,
       reconnectBaseDelayMs: this.opts.reconnectBaseDelayMs ?? RECONNECT_BASE_DELAY_MS,
       reconnectMaxDelayMs: this.opts.reconnectMaxDelayMs ?? RECONNECT_MAX_DELAY_MS,
       reconnectMaxAttempts: this.opts.reconnectMaxAttempts ?? RECONNECT_MAX_ATTEMPTS,
+      slowRetryIntervalMs: this.opts.slowRetryIntervalMs ?? SLOW_RETRY_INTERVAL_MS,
+      slowRetryJitterMs: this.opts.slowRetryJitterMs ?? SLOW_RETRY_JITTER_MS,
+      limits:
+        limits === undefined
+          ? undefined
+          : {
+              maxEventsPerSubscription: limits.maxEventsPerSubscription,
+              incomingRateWindowMs: limits.incomingRateWindowMs,
+              maxEventsPerConnectionPerWindow: limits.maxEventsPerConnectionPerWindow,
+            },
+      onStatus: this.opts.onRelayStatus,
       log: this.opts.log,
     }
   }
