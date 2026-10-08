@@ -36,7 +36,7 @@
 ### 1. 安装与构建
 
 ```bash
-git clone <本仓库> && cd agentnet
+git clone https://github.com/liangz2210-lgtm/agentnet.git && cd agentnet
 pnpm install
 pnpm build          # 产出 dist/cli/bin.js
 ```
@@ -268,7 +268,7 @@ agentnet listen                          连接中继，接收并显示消息
 pnpm install         # 需要 .npmrc 中的 node-linker=hoisted，见 DECISIONS.md §13
 pnpm build           # 编译到 dist/（端到端测试跑的是这个真实二进制）
 pnpm typecheck
-pnpm test            # 单元 + 集成 + 端到端（205 passed）
+pnpm test            # 单元 + 集成 + 端到端（231 passed）
 pnpm test:unit
 pnpm test:integration
 pnpm test:e2e
